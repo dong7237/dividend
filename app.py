@@ -178,7 +178,7 @@ def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
 # --- Streamlit 앱 메인 로직 ---
 def main():
     st.set_page_config(layout="wide")
-    st.title('📈 적립식 투자 vs 예/적금 비교 시뮬레이터 (개선판)')
+    st.title('📈 적립식 투자 시뮬레이터')
 
     with st.sidebar:
         st.header("⚙️ 공통 조건 설정")
