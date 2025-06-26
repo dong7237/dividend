@@ -222,7 +222,7 @@ def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
 def main() -> None:
     """Streamlit 앱 메인 로직"""
     st.set_page_config(layout="wide")
-    st.title('📈 적립식 투자 시뮬레이터 (개선판 v2)')
+    st.title('📈 적립식 투자 시뮬레이터')
 
     if 'simulation_run' not in st.session_state:
         st.session_state['simulation_run'] = False
