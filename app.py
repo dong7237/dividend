@@ -9,7 +9,9 @@ def run_simulation(
     annual_price_growth_rate: float,
     annual_dividend_yield: float,
     reinvest_dividends: bool,
-    exchange_rate: int
+    exchange_rate: int,
+    dividend_tax_rate: float,
+    annual_expense_ratio: float
 ) -> List[Dict[str, Any]]:
     """
     적립식 투자 월 복리 시뮬레이션을 실행합니다.
@@ -45,12 +47,18 @@ def run_simulation(
         
         # 2. 배당금 발생
         monthly_dividend = growth_applied_asset * monthly_dividend_yield
-        total_dividends_usd += monthly_dividend
-        current_year_dividends_usd += monthly_dividend
+
+        # 세후 배당금 계산 (추가된 부분)
+        monthly_dividend_after_tax = monthly_dividend * (1 - dividend_tax_rate / 100)
+    
+        total_dividends_usd += monthly_dividend_after_tax # 세후 금액으로 누적
+        current_year_dividends_usd += monthly_dividend_after_tax # 세후 금액으로 누적
+            
         
         # 3. 자산 및 원금 업데이트
         if reinvest_dividends:
-            total_asset_usd = growth_applied_asset + monthly_dividend + monthly_investment_usd
+            # 세후 배당금을 재투자
+            total_asset_usd = growth_applied_asset + monthly_dividend_after_tax + monthly_investment_usd
         else:
             total_asset_usd = growth_applied_asset + monthly_investment_usd
             
@@ -58,11 +66,13 @@ def run_simulation(
 
         # 4. 연말 데이터 저장
         if month % 12 == 0:
+            total_asset_usd *= (1 - annual_expense_ratio / 100)
             year = month // 12
             results.append({
                 "연차": year,
                 "총 투자 원금": total_principal_usd,
                 "최종 평가 금액": total_asset_usd,
+                "자본 이득": capital_gains_usd,
                 "연간 배당금": current_year_dividends_usd,
                 "총 누적 배당금": total_dividends_usd,
             })
@@ -73,6 +83,19 @@ def run_simulation(
 # --- 사이드바 UI 구성 ---
 st.sidebar.header("⚙️ 투자 조건 설정")
 
+st.sidebar.subheader("세금 및 수수료")
+st.sidebar.subheader("거시 경제")
+annual_inflation_rate = st.sidebar.number_input(
+    '연평균 물가 상승률 (%)', min_value=0.0, max_value=20.0, value=2.5, step=0.1
+)
+dividend_tax_rate = st.sidebar.number_input(
+    '배당소득세율 (%)', min_value=0.0, max_value=100.0, value=15.0, step=0.1
+)
+
+annual_expense_ratio = st.sidebar.number_input(
+    '연간 운용보수 (%)', min_value=0.0, max_value=5.0, value=0.06, step=0.01,
+    help="ETF 운용사에 매년 지불하는 수수료입니다."
+)
 monthly_investment_krw_만원 = st.sidebar.slider(
     '월 투자 원금 (만원)', 
     min_value=10, max_value=500, step=5, value=45
@@ -126,7 +149,9 @@ if run_button:
         annual_price_growth_rate,
         annual_dividend_yield,
         reinvest_dividends,
-        exchange_rate
+        exchange_rate,
+        dividend_tax_rate,    # 추가
+        annual_expense_ratio  # 추가
     )
     st.session_state['results'] = results_data
     st.session_state['simulation_run'] = True
@@ -174,13 +199,23 @@ if st.session_state.get('simulation_run', False):
         df_display = df.copy()
         for col in ["총 투자 원금", "최종 평가 금액", "연간 배당금", "총 누적 배당금"]:
             df_display[col] = (df_display[col] * exchange_rate)
-
+        # 현재 가치 컬럼 추가 (추가된 부분)
+        df_display["최종 평가 금액 (현재 가치)"] = df_display.apply(
+            lambda row: row["최종 평가 금액"] / ((1 + annual_inflation_rate / 100) ** row["연차"]),
+            axis=1
+        )
+        df_display["연간 배당금 (현재 가치)"] = df_display.apply(
+            lambda row: row["연간 배당금"] / ((1 + annual_inflation_rate / 100) ** row["연차"]),
+            axis=1
+        )
         st.dataframe(
             df_display.style.format({
                 "총 투자 원금": "{:,.0f}원",
                 "최종 평가 금액": "{:,.0f}원",
                 "연간 배당금": "{:,.0f}원",
                 "총 누적 배당금": "{:,.0f}원",
+                "최종 평가 금액 (현재 가치)": "{:,.0f}원",
+                "연간 배당금 (현재 가치)": "{:,.0f}원",
             }),
             hide_index=True,
             use_container_width=True
@@ -188,8 +223,16 @@ if st.session_state.get('simulation_run', False):
 
         # C. 자산 성장 시각화
         st.subheader("💹 자산 성장 시각화")
-        chart_df = df_display.set_index("연차")[["총 투자 원금", "최종 평가 금액"]]
+        chart_df = df_display.set_index("연차")[["총 투자 원금", "최종 평가 금액","최종 평가 금액 (현재 가치)"]]
         st.line_chart(chart_df)
+
+        st.subheader("📈 자산 구성 시각화")
+        
+        # 누적 막대 그래프를 위한 데이터프레임 생성
+        composition_df = df_display.set_index("연차")[
+            ["총 투자 원금", "자본 이득", "총 누적 배당금"]
+        ]
+st.bar_chart(composition_df)
 else:
     st.info("좌측 사이드바에서 투자 조건을 설정하고 '시뮬레이션 실행' 버튼을 눌러주세요.")
     st.markdown("""
