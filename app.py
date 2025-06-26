@@ -9,7 +9,8 @@ ASSET_KRW = "최종 평가 금액(원)"
 CAPITAL_GAINS_KRW = "자본 이득(원)"
 CUMULATIVE_DIVIDEND_KRW = "누적 배당금(원)"
 SAVINGS_ASSET_KRW = "예/적금 평가 금액(원)"
-ASSET_PV_KRW = "최종 평가 금액(현재 가치)"
+ASSET_PV_KRW = "적립식 투자 평가 금액(현재 가치)"
+SAVINGS_ASSET_PV_KRW = "예/적금 평가 금액(현재 가치)"
 
 SCHD_DEFAULTS = {'apgr': 7.0, 'ady': 3.5}
 JEPI_DEFAULTS = {'apgr': 4.0, 'ady': 7.5}
@@ -49,6 +50,7 @@ def format_krw(amount: float) -> str:
 # --- 시뮬레이션 함수 ---
 def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
     """적립식 투자 시뮬레이션을 실행합니다."""
+    # 입력값을 월 단위로 변환 및 초기화
     monthly_investment_usd = inputs.monthly_investment_krw / inputs.exchange_rate
     total_months = inputs.investment_years * 12
     monthly_growth_rate = (1 + inputs.annual_price_growth_rate / 100) ** (1/12) - 1
@@ -68,22 +70,26 @@ def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
         cumulative_dividends_usd += dividend_after_tax
         
         asset_usd += monthly_investment_usd # 월 추가 납입
+        principal_usd += monthly_investment_usd
+        
         if inputs.reinvest_dividends:
             asset_usd += dividend_after_tax # 배당금 재투자
-            
-        principal_usd += monthly_investment_usd
+            # [수정] 재투자된 배당은 투자 원금(취득가액)에 포함시켜 이중과세 방지
+            principal_usd += dividend_after_tax
 
+        # 매년 말일 경우
         if month % 12 == 0:
             asset_usd -= asset_usd * (inputs.annual_expense_ratio / 100) # 운용보수 차감
             
             capital_gains_usd = asset_usd - principal_usd
             final_asset_usd = asset_usd
             
-            # 마지막 해에만 양도소득세 계산 및 차감
+            # [수정] 마지막 해에만 양도소득세 계산 및 차감
             if month // 12 == inputs.investment_years:
-                taxable_gains = max(0, asset_usd - principal_usd)
+                taxable_gains = max(0, capital_gains_usd)
                 capital_gains_tax = taxable_gains * (inputs.capital_gains_tax_rate / 100)
                 final_asset_usd -= capital_gains_tax
+                capital_gains_usd -= capital_gains_tax # 자본이득도 세후 금액으로 조정
 
             results.append({
                 YEAR: month // 12,
@@ -147,15 +153,16 @@ def display_summary(final_data: pd.Series, inputs: SimulationInputs):
         f"적립식 투자를 통해 **{format_krw(inv_asset)}**(으)로, "
         f"예/적금 투자를 통해 **{format_krw(sav_asset)}**(으)로 증가할 것으로 예상됩니다."
     )
-    st.warning("주의: 본 시뮬레이션의 모든 결과는 사용자가 입력한 가정에 기반한 추정치이며, 미래의 실제 수익률을 보장하지 않습니다. 세금 및 수수료 등은 현실과 다를 수 있으므로 투자 결정의 보조 자료로만 활용하시기 바랍니다.")
-
+    
 
 def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
     """상세 데이터 테이블과 시각화 차트를 표시합니다."""
     df_display = df.copy()
 
+    # [수정] 물가상승률을 적용한 현재가치(PV) 계산
     inflation_divisor = (1 + inputs.annual_inflation_rate / 100) ** df_display[YEAR]
     df_display[ASSET_PV_KRW] = df_display[ASSET_KRW] / inflation_divisor
+    df_display[SAVINGS_ASSET_PV_KRW] = df_display[SAVINGS_ASSET_KRW] / inflation_divisor
 
     st.subheader("📋 연차별 상세 결과")
     display_cols = {
@@ -164,17 +171,24 @@ def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
         ASSET_KRW: "적립식 투자 평가액",
         SAVINGS_ASSET_KRW: "예/적금 평가액",
         ASSET_PV_KRW: "적립식 투자 현재가치",
-        CUMULATIVE_DIVIDEND_KRW: "누적 배당금",
-        CAPITAL_GAINS_KRW: "자본 이득",
+        SAVINGS_ASSET_PV_KRW: "예/적금 현재가치",
+        CUMULATIVE_DIVIDEND_KRW: "누적 배당금(세후)",
+        CAPITAL_GAINS_KRW: "자본 이득(세후)",
     }
     df_table = df_display[list(display_cols.keys())].rename(columns=display_cols)
     format_dict = {col: "{:,.0f}원" for col in display_cols.values() if col != "연차"}
     st.dataframe(df_table.style.format(formatter=format_dict), hide_index=True, use_container_width=True)
 
-    st.subheader("💹 자산 성장 비교 시각화")
-    chart_df = df_display.set_index(YEAR)[[PRINCIPAL_KRW, SAVINGS_ASSET_KRW, ASSET_KRW]]
-    chart_df.columns = ["총 투자 원금", "예/적금 (세후)", "적립식 투자 (세후)"]
-    st.line_chart(chart_df)
+    st.subheader("💹 자산 명목가치 성장 비교")
+    chart_df_nominal = df_display.set_index(YEAR)[[PRINCIPAL_KRW, SAVINGS_ASSET_KRW, ASSET_KRW]]
+    chart_df_nominal.columns = ["총 투자 원금", "예/적금 (세후)", "적립식 투자 (세후)"]
+    st.line_chart(chart_df_nominal)
+    
+    # [수정] 현재가치 비교 차트 추가
+    st.subheader("📉 자산 현재가치(PV) 성장 비교 (물가상승률 감안)")
+    chart_df_pv = df_display.set_index(YEAR)[[PRINCIPAL_KRW, SAVINGS_ASSET_PV_KRW, ASSET_PV_KRW]]
+    chart_df_pv.columns = ["총 투자 원금 (명목)", "예/적금 (현재 가치)", "적립식 투자 (현재 가치)"]
+    st.line_chart(chart_df_pv)
 
 
 # --- Streamlit 앱 메인 로직 ---
@@ -201,7 +215,8 @@ def main():
             elif rate_model == 'JEPI':
                 apgr, ady = JEPI_DEFAULTS['apgr'], JEPI_DEFAULTS['ady']
             else:
-                apgr = st.number_input('연평균 주가 성장률 (%)', -10.0, 30.0, 7.0, 0.1)
+                # 입력값 범위 일부 조정
+                apgr = st.number_input('연평균 주가 성장률 (%)', -20.0, 50.0, 7.0, 0.1)
                 ady = st.number_input('연평균 배당수익률 (%)', 0.0, 20.0, 3.5, 0.1)
 
             reinvest_dividends = st.toggle('배당 수익 자동 재투자', value=True)
@@ -249,7 +264,19 @@ def main():
         display_charts_and_data(results_df, inputs)
     else:
         st.info("좌측 사이드바에서 투자 조건을 설정하고 '시뮬레이션 실행' 버튼을 눌러주세요.")
-
+        
+    # [수정] 모델의 주요 가정과 한계점 명시
+    with st.expander("ℹ️ 시뮬레이션 모델의 주요 가정 및 한계"):
+        st.warning("본 시뮬레이션의 모든 결과는 사용자가 입력한 가정에 기반한 추정치이며, 미래의 실제 수익률을 보장하지 않습니다.")
+        st.markdown("""
+        - **고정 수익률**: 시뮬레이션은 사용자가 입력한 '연평균' 수익률이 매년 일정하게 발생한다고 가정합니다. 실제 시장의 변동성은 반영되지 않으므로, 손실이 발생하는 해가 있을 수 있습니다.
+        - **고정 환율**: 전체 투자 기간 동안 환율이 변동하지 않는다고 가정합니다. 장기 투자 시 환율 변동은 수익률에 큰 영향을 줄 수 있습니다.
+        - **단순화된 세금**: 배당소득세와 양도소득세는 현재의 단일 세율을 적용하며, 실제로는 금융소득종합과세, 세법 개정 등 더 복잡한 세금 체계가 적용될 수 있습니다.
+        - **기타 비용 미반영**: 증권사 매매 수수료, 환전 수수료 등의 거래 비용은 계산에 포함되지 않아 실제 수익률은 더 낮을 수 있습니다.
+        - **배당과 가격 성장**: 배당수익률과 주가 성장률을 독립적인 변수로 가정합니다. 현실에서는 두 지표가 서로 영향을 미칠 수 있습니다.
+        
+        **결론적으로 본 도구는 교육 및 시나리오 분석 목적으로만 활용해야 하며, 실제 투자 결정의 직접적인 근거로 사용될 수 없습니다.**
+        """)
 
 if __name__ == "__main__":
     main()
