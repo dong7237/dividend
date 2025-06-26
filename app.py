@@ -1,24 +1,34 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from typing import Dict, Any
+from dataclasses import dataclass, asdict
 
-# --- Constants ---
+# --- 데이터 클래스 정의 ---
+@dataclass
+class SimulationInputs:
+    """시뮬레이션 입력값을 저장하는 데이터 클래스"""
+    monthly_investment_krw: int
+    investment_years: int
+    exchange_rate: int
+    annual_inflation_rate: float
+    annual_dividend_yield: float
+    annual_price_growth_rate: float
+    dividend_tax_rate: float
+    annual_expense_ratio: float
+    reinvest_dividends: bool
+    savings_interest_rate: float
+    savings_tax_rate: float
+
+
+# --- 상수 정의 ---
 YEAR = "연차"
-PRINCIPAL_USD = "총 투자 원금(USD)"
-ASSET_USD = "최종 평가 금액(USD)"
-CAPITAL_GAINS_USD = "자본 이득(USD)"
-ANNUAL_DIVIDEND_USD = "연간 배당금(USD)"
-CUMULATIVE_DIVIDEND_USD = "총 누적 배당금(USD)"
 PRINCIPAL_KRW = "총 투자 원금(원)"
 ASSET_KRW = "최종 평가 금액(원)"
-CAPITAL_GAINS_KRW = "자본 이득(원)"
-CUMULATIVE_DIVIDEND_KRW = "총 누적 배당금(원)"
 SAVINGS_ASSET_KRW = "예/적금 평가 금액(원)"
 ASSET_PV_KRW = "최종 평가 금액(현재 가치)"
 
 
-# --- Utility Functions ---
+# --- 유틸리티 함수 ---
 def format_krw(amount: float) -> str:
     """숫자를 '조', '억', '만' 단위의 원화 문자열로 변환합니다."""
     if abs(amount) >= 1_0000_0000_0000:
@@ -30,87 +40,75 @@ def format_krw(amount: float) -> str:
     return f"{amount:,.0f}원"
 
 
-# --- Simulation Functions ---
-def run_investment_simulation(inputs: Dict[str, Any]) -> pd.DataFrame:
+# --- 시뮬레이션 함수 ---
+def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
     """적립식 투자 시뮬레이션을 실행합니다."""
-    monthly_investment_usd = inputs['monthly_investment_krw'] / inputs['exchange_rate']
-    total_months = inputs['investment_years'] * 12
-    monthly_growth_rate = (1 + inputs['annual_price_growth_rate'] / 100) ** (1/12) - 1
-    monthly_dividend_yield = (1 + inputs['annual_dividend_yield'] / 100) ** (1/12) - 1
+    monthly_investment_usd = inputs.monthly_investment_krw / inputs.exchange_rate
+    total_months = inputs.investment_years * 12
+    monthly_growth_rate = (1 + inputs.annual_price_growth_rate / 100) ** (1/12) - 1
+    monthly_dividend_yield = (1 + inputs.annual_dividend_yield / 100) ** (1/12) - 1
 
-    asset_usd, principal_usd, gains_usd, dividends_usd = 0.0, 0.0, 0.0, 0.0
+    asset_usd = 0.0
+    principal_usd = 0.0
+    cumulative_dividends_usd = 0.0
     results = []
-    year_dividends = 0.0
-
-    if total_months == 0:
-        return pd.DataFrame()
 
     for month in range(1, total_months + 1):
-        monthly_gain = asset_usd * monthly_growth_rate
-        gains_usd += monthly_gain
-        asset_after_growth = asset_usd + monthly_gain
+        # 자산 성장 및 배당금 발생
+        asset_growth = asset_usd * monthly_growth_rate
+        asset_after_growth = asset_usd + asset_growth
 
         monthly_dividend = asset_after_growth * monthly_dividend_yield
-        dividend_after_tax = monthly_dividend * (1 - inputs['dividend_tax_rate'] / 100)
-        dividends_usd += dividend_after_tax
-        year_dividends += dividend_after_tax
+        dividend_after_tax = monthly_dividend * (1 - inputs.dividend_tax_rate / 100)
+        cumulative_dividends_usd += dividend_after_tax
 
+        # 월 투자금 및 배당금 재투자
         asset_usd = asset_after_growth + monthly_investment_usd
-        if inputs['reinvest_dividends']:
+        if inputs.reinvest_dividends:
             asset_usd += dividend_after_tax
         principal_usd += monthly_investment_usd
 
+        # 연말 결산 및 운용보수 차감
         if month % 12 == 0:
-            expense = asset_usd * (inputs['annual_expense_ratio'] / 100)
+            expense = asset_usd * (inputs.annual_expense_ratio / 100)
             asset_usd -= expense
-            gains_usd -= expense
 
             results.append({
                 YEAR: month // 12,
-                PRINCIPAL_USD: principal_usd,
-                ASSET_USD: asset_usd,
-                CAPITAL_GAINS_USD: gains_usd,
-                CUMULATIVE_DIVIDEND_USD: dividends_usd,
+                PRINCIPAL_KRW: principal_usd * inputs.exchange_rate,
+                ASSET_KRW: asset_usd * inputs.exchange_rate,
             })
-            year_dividends = 0.0
 
     return pd.DataFrame(results)
 
-def run_savings_simulation(inputs: Dict[str, Any]) -> pd.DataFrame:
-    """예/적금(무위험) 시뮬레이션을 실행합니다."""
-    monthly_investment = inputs['monthly_investment_krw']
-    total_months = inputs['investment_years'] * 12
-    monthly_rate = (1 + inputs['savings_interest_rate'] / 100) ** (1/12) - 1
-    tax_rate = inputs['savings_tax_rate'] / 100
+def run_savings_simulation(inputs: SimulationInputs) -> pd.DataFrame:
+    """예/적금(단리) 시뮬레이션을 실행합니다."""
+    total_months = inputs.investment_years * 12
+    monthly_rate = inputs.savings_interest_rate / 100 / 12
 
-    principal, asset = 0.0, 0.0
+    principal = 0.0
+    asset = 0.0
     results = []
 
-    if total_months == 0:
-        return pd.DataFrame()
-
     for month in range(1, total_months + 1):
-        interest = asset * monthly_rate
-        asset += interest
-        asset += monthly_investment
-        principal += monthly_investment
-
+        principal += inputs.monthly_investment_krw
+        
         if month % 12 == 0:
-            year_interest = asset - principal - sum(res[SAVINGS_ASSET_KRW] - res[PRINCIPAL_KRW] for res in results)
-            taxable_interest = max(0, year_interest - (asset - principal) * (1-tax_rate)) # 이전 이자 제외
-            asset -= taxable_interest * tax_rate
-
+            # 1년치 이자 계산 (단리)
+            interest = (asset + (inputs.monthly_investment_krw * 12)) * (inputs.savings_interest_rate/100) 
+            interest_after_tax = interest * (1 - inputs.savings_tax_rate / 100)
+            asset = principal + interest_after_tax
+            
             results.append({
                 YEAR: month // 12,
-                PRINCIPAL_KRW: principal,
                 SAVINGS_ASSET_KRW: asset,
             })
-
+            
     return pd.DataFrame(results)
 
 
-# --- UI Display Functions ---
-def display_summary(final_data: pd.Series, inputs: Dict[str, Any]):
+# --- UI 표시 함수 ---
+def display_summary(final_data: pd.Series, inputs: SimulationInputs):
     """최종 결과 요약 정보를 비교하여 표시합니다."""
     st.subheader("📊 최종 결과 요약")
 
@@ -124,44 +122,34 @@ def display_summary(final_data: pd.Series, inputs: Dict[str, Any]):
     col3.metric("적립식 투자", format_krw(inv_asset), f"수익: {format_krw(inv_asset - inv_principal)}")
 
     st.info(
-        f"**{inputs['investment_years']}년** 후, 총 투자 원금 **{format_krw(inv_principal)}**은(는) "
+        f"**{inputs.investment_years}년** 후, 총 투자 원금 **{format_krw(inv_principal)}**은(는) "
         f"적립식 투자를 통해 **{format_krw(inv_asset)}**(으)로, "
         f"예/적금 투자를 통해 **{format_krw(sav_asset)}**(으)로 증가할 것으로 예상됩니다."
     )
 
-
-def display_charts_and_data(df: pd.DataFrame, inputs: Dict[str, Any]):
+def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
     """상세 데이터 테이블과 시각화 차트를 표시합니다."""
-    # 데이터 가공
-    exchange_rate = inputs['exchange_rate']
-    inflation_rate = inputs['annual_inflation_rate']
-
     df_display = df.copy()
-    for col in [PRINCIPAL_USD, ASSET_USD, CAPITAL_GAINS_USD, CUMULATIVE_DIVIDEND_USD]:
-        krw_col_name = col.replace("USD", "KRW")
-        if krw_col_name.endswith("(원)"): # 기존 KRW 컬럼 이름 형식 유지
-             krw_col_name = krw_col_name.replace("(원)", " KRW")
-        df_display[krw_col_name] = df_display[col] * exchange_rate
 
-
-    inflation_divisor = (1 + inflation_rate / 100) ** df_display[YEAR]
+    # 현재가치 계산
+    inflation_divisor = (1 + inputs.annual_inflation_rate / 100) ** df_display[YEAR]
     df_display[ASSET_PV_KRW] = df_display[ASSET_KRW] / inflation_divisor
 
     # 테이블 표시
     st.subheader("📋 연차별 상세 결과")
     display_cols = {
         YEAR: "연차",
-        PRINCIPAL_KRW: "총투자원금",
-        ASSET_KRW: "투종평가금액",
-        SAVINGS_ASSET_KRW: "예적금평가액",
-        ASSET_PV_KRW: "투자현재가치",
+        PRINCIPAL_KRW: "총 투자 원금",
+        ASSET_KRW: "적립식 투자 평가액",
+        SAVINGS_ASSET_KRW: "예/적금 평가액",
+        ASSET_PV_KRW: "적립식 투자 현재가치",
     }
     df_table = df_display[list(display_cols.keys())].rename(columns=display_cols)
+    
+    format_dict = {col: "{:,.0f}원" for col in display_cols.values() if col != "연차"}
+
     st.dataframe(
-        df_table.style.format(formatter={
-            "총투자원금": "{:,.0f}원", "투종평가금액": "{:,.0f}원",
-            "예적금평가액": "{:,.0f}원", "투자현재가치": "{:,.0f}원",
-        }),
+        df_table.style.format(formatter=format_dict),
         hide_index=True, use_container_width=True
     )
 
@@ -174,58 +162,77 @@ def display_charts_and_data(df: pd.DataFrame, inputs: Dict[str, Any]):
     st.session_state['final_data'] = df_display.iloc[-1]
 
 
-# --- Streamlit App Main ---
-st.set_page_config(layout="wide")
-st.title('📈 적립식 투자 vs 예/적금 비교 시뮬레이터')
+# --- Streamlit 앱 메인 로직 ---
+def main():
+    st.set_page_config(layout="wide")
+    st.title('📈 적립식 투자 vs 예/적금 비교 시뮬레이터')
 
-# --- Sidebar Inputs ---
-with st.sidebar:
-    st.header("⚙️ 공통 조건 설정")
-    monthly_investment_krw = st.slider('월 투자 원금 (만원)', 10, 500, 50, 5) * 10000
-    investment_years = st.slider('투자 기간 (년)', 1, 40, 20, 1)
-    exchange_rate = st.number_input('원/달러 환율 (원)', 1000, 2000, 1380)
-    annual_inflation_rate = st.slider('연평균 물가 상승률 (%)', 0.0, 10.0, 2.5, 0.1)
+    # --- 사이드바 입력 ---
+    with st.sidebar:
+        st.header("⚙️ 공통 조건 설정")
+        monthly_investment_krw = st.slider('월 투자 원금 (만원)', 10, 500, 50, 5) * 10000
+        investment_years = st.slider('투자 기간 (년)', 1, 40, 20, 1)
+        exchange_rate = st.number_input('원/달러 환율 (원)', 1000, 2000, 1380)
+        annual_inflation_rate = st.slider('연평균 물가 상승률 (%)', 0.0, 10.0, 2.5, 0.1, format="%.1f")
 
-    with st.expander("📈 적립식 투자 조건"):
-        rate_model = st.radio('수익률 모델', ('SCHD', 'JEPI', '직접 입력'), index=0, horizontal=True)
-        if rate_model == 'SCHD':
-            annual_dividend_yield, annual_price_growth_rate = 3.5, 7.0
-        elif rate_model == 'JEPI':
-            annual_dividend_yield, annual_price_growth_rate = 7.5, 4.0
+        with st.expander("📈 적립식 투자 조건", expanded=True):
+            rate_model = st.radio('수익률 모델', ('SCHD', 'JEPI', '직접 입력'), index=0, horizontal=True)
+            if rate_model == 'SCHD':
+                annual_dividend_yield, annual_price_growth_rate = 3.5, 7.0
+            elif rate_model == 'JEPI':
+                annual_dividend_yield, annual_price_growth_rate = 7.5, 4.0
+            else:
+                annual_dividend_yield = st.number_input('연평균 배당수익률 (%)', 0.0, 20.0, 3.5, 0.1)
+                annual_price_growth_rate = st.number_input('연평균 주가 성장률 (%)', -10.0, 30.0, 7.0, 0.1)
+            
+            dividend_tax_rate = st.slider('배당소득세율 (%)', 0.0, 50.0, 15.4, 0.1, format="%.1f")
+            annual_expense_ratio = st.slider('연간 운용보수 (%)', 0.0, 2.0, 0.06, 0.01, format="%.2f")
+            reinvest_dividends = st.toggle('배당 수익 자동 재투자', value=True)
+
+        with st.expander("💰 예/적금 투자 조건", expanded=True):
+            savings_interest_rate = st.slider('연평균 예/적금 금리 (%)', 0.0, 10.0, 3.5, 0.1, format="%.1f")
+            savings_tax_rate = st.slider('이자소득세율 (%)', 0.0, 50.0, 15.4, 0.1, format="%.1f")
+
+        run_button = st.button('🚀 시뮬레이션 실행', use_container_width=True)
+
+    # --- 메인 패널 로직 ---
+    if run_button:
+        inputs = SimulationInputs(
+            monthly_investment_krw=monthly_investment_krw,
+            investment_years=investment_years,
+            exchange_rate=exchange_rate,
+            annual_inflation_rate=annual_inflation_rate,
+            annual_dividend_yield=annual_dividend_yield,
+            annual_price_growth_rate=annual_price_growth_rate,
+            dividend_tax_rate=dividend_tax_rate,
+            annual_expense_ratio=annual_expense_ratio,
+            reinvest_dividends=reinvest_dividends,
+            savings_interest_rate=savings_interest_rate,
+            savings_tax_rate=savings_tax_rate,
+        )
+        
+        if inputs.investment_years > 0:
+            inv_df = run_investment_simulation(inputs)
+            sav_df = run_savings_simulation(inputs)
+            
+            # YEAR 기준으로 데이터 병합
+            results_df = pd.merge(inv_df, sav_df, on=YEAR, how="left")
+            
+            st.session_state['results_df'] = results_df
+            st.session_state['inputs'] = inputs
+            st.session_state['simulation_run'] = True
         else:
-            annual_dividend_yield = st.number_input('연평균 배당수익률 (%)', 0.0, 20.0, 3.5, 0.1)
-            annual_price_growth_rate = st.number_input('연평균 주가 성장률 (%)', -10.0, 30.0, 7.0, 0.1)
-        dividend_tax_rate = st.slider('배당소득세율 (%)', 0.0, 50.0, 15.4, 0.1)
-        annual_expense_ratio = st.slider('연간 운용보수 (%)', 0.0, 5.0, 0.06, 0.01)
-        reinvest_dividends = st.toggle('배당 수익 자동 재투자', value=True)
+            st.warning("투자 기간을 1년 이상으로 설정해주세요.")
+            st.session_state['simulation_run'] = False
 
-    with st.expander("💰 예/적금 투자 조건"):
-        savings_interest_rate = st.slider('연평균 예/적금 금리 (%)', 0.0, 10.0, 3.5, 0.1)
-        savings_tax_rate = st.slider('이자소득세율 (%)', 0.0, 50.0, 15.4, 0.1)
-
-
-    run_button = st.button('🚀 시뮬레이션 실행', use_container_width=True)
-
-# --- Main Panel Logic ---
-if run_button:
-    inputs = locals()
-    inv_df = run_investment_simulation(inputs)
-
-    if not inv_df.empty:
-        sav_df = run_savings_simulation(inputs)
-        # 투자 & 예적금 데이터 병합
-        results_df = pd.merge(inv_df, sav_df, on=[YEAR, PRINCIPAL_KRW], how="left")
-        st.session_state['results_df'] = results_df
-        st.session_state['inputs'] = inputs
-        st.session_state['simulation_run'] = True
+    if st.session_state.get('simulation_run', False):
+        results_df = st.session_state['results_df']
+        inputs = st.session_state['inputs']
+        
+        display_summary(results_df.iloc[-1], inputs)
+        display_charts_and_data(results_df, inputs)
     else:
-        st.warning("투자 기간을 1년 이상으로 설정해주세요.")
-        st.session_state['simulation_run'] = False
+        st.info("좌측 사이드바에서 투자 조건을 설정하고 '시뮬레이션 실행' 버튼을 눌러주세요.")
 
-if st.session_state.get('simulation_run', False):
-    results_df = st.session_state['results_df']
-    inputs = st.session_state['inputs']
-    display_charts_and_data(results_df, inputs)
-    display_summary(st.session_state['final_data'], inputs)
-else:
-    st.info("좌측 사이드바에서 투자 조건을 설정하고 '시뮬레이션 실행' 버튼을 눌러주세요.")
+if __name__ == "__main__":
+    main()
