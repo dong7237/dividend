@@ -12,6 +12,7 @@ class SimulationInputs:
     annual_inflation_rate: float
     annual_price_growth_rate: float
     capital_gains_tax_rate: float
+    seed_money_krw: int
     annual_dividend_yield: float
     dividend_tax_rate: float
     annual_expense_ratio: float
@@ -49,9 +50,9 @@ def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
     total_months = inputs.investment_years * 12
     monthly_growth_rate = (1 + inputs.annual_price_growth_rate / 100) ** (1/12) - 1
     monthly_dividend_yield = (1 + inputs.annual_dividend_yield / 100) ** (1/12) - 1
-
-    asset_usd = 0.0
-    principal_usd = 0.0
+    seed_money_usd = inputs.seed_money_krw / inputs.exchange_rate
+    asset_usd = seed_money_usd
+    principal_usd = seed_money_usd
     cumulative_dividends_usd = 0.0
     non_reinvested_dividends_usd = 0.0
     results = []
@@ -101,10 +102,9 @@ def run_savings_simulation(inputs: SimulationInputs) -> pd.DataFrame:
     total_months = inputs.investment_years * 12
     monthly_rate = inputs.savings_interest_rate / 100 / 12
     tax_rate = inputs.savings_tax_rate / 100
-
-    principal = 0.0
-    asset = 0.0
-    total_interest = 0.0
+    principal = float(inputs.seed_money_krw)
+    asset = float(inputs.seed_money_krw)    
+    total_months = inputs.investment_years * 12
     results = []
 
     for month in range(1, total_months + 1):
@@ -186,7 +186,9 @@ def main():
         investment_years = st.slider('투자 기간 (년)', 1, 60, 20, 1)
         exchange_rate = st.number_input('원/달러 환율 (원)', 800, 2500, 1380)
         annual_inflation_rate = st.slider('연평균 물가 상승률 (%)', 0.0, 10.0, 2.5, 0.1, format="%.1f")
+        seed_money_krw = st.number_input('초기 시드머니 (만원)', 0, 10000, 0, 100) * 10000
 
+        monthly_investment_krw = st.slider('월 투자 원금 (만원)', 10, 500, 50, 5) * 10000    
         with st.expander("📈 적립식 투자 조건", expanded=True):
             rate_model = st.radio('수익률 모델', ('SCHD', 'JEPI', '직접 입력'), index=0, horizontal=True)
             if rate_model == 'SCHD':
@@ -213,6 +215,7 @@ def main():
 
     if run_button:
         inputs = SimulationInputs(
+            seed_money_krw=seed_money_krw,
             monthly_investment_krw=monthly_investment_krw, investment_years=investment_years,
             exchange_rate=exchange_rate, annual_inflation_rate=annual_inflation_rate,
             annual_price_growth_rate=annual_price_growth_rate, capital_gains_tax_rate=capital_gains_tax_rate,
