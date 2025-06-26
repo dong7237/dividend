@@ -232,7 +232,7 @@ if st.session_state.get('simulation_run', False):
         composition_df = df_display.set_index("연차")[
             ["총 투자 원금", "자본 이득", "총 누적 배당금"]
         ]
-st.bar_chart(composition_df)
+        st.bar_chart(composition_df)
 else:
     st.info("좌측 사이드바에서 투자 조건을 설정하고 '시뮬레이션 실행' 버튼을 눌러주세요.")
     st.markdown("""
