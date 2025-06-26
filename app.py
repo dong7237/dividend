@@ -2,21 +2,34 @@ import streamlit as st
 import pandas as pd
 from dataclasses import dataclass
 
-# --- 상수 정의 (기존과 동일) ---
+# --- 상수 정의 ---
+MONTHS_IN_YEAR = 12
 YEAR = "연차"
 PRINCIPAL_KRW = "총 투자 원금(원)"
 ASSET_KRW = "최종 평가 금액(원)"
-CAPITAL_GAINS_KRW = "자본 이득(원)"
+CAPITAL_GAINS_KRW = "자본 이득(최종연도 세후)" # 컬럼명 수정
 CUMULATIVE_DIVIDEND_KRW = "누적 배당금(원)"
 SAVINGS_ASSET_KRW = "예/적금 평가 금액(원)"
 ASSET_PV_KRW = "적립식 투자 평가 금액(현재 가치)"
 SAVINGS_ASSET_PV_KRW = "예/적금 평가 금액(현재 가치)"
 
-# --- 프리셋 기본값 (기존과 동일) ---
+# UI 표시용 컬럼 정의 (전역 상수로 이동)
+DISPLAY_COLS = {
+    YEAR: "연차",
+    PRINCIPAL_KRW: "총 투자 원금",
+    ASSET_KRW: "적립식 투자 평가액",
+    SAVINGS_ASSET_KRW: "예/적금 평가액",
+    ASSET_PV_KRW: "적립식 투자 현재가치",
+    SAVINGS_ASSET_PV_KRW: "예/적금 현재가치",
+    CUMULATIVE_DIVIDEND_KRW: "누적 배당금(세후)",
+    CAPITAL_GAINS_KRW: "자본 이득(최종연도 세후)",
+}
+
+# --- 프리셋 기본값 ---
 SCHD_DEFAULTS = {'apgr': 7.0, 'ady': 3.5}
 JEPI_DEFAULTS = {'apgr': 4.0, 'ady': 7.5}
 
-# --- 사용자 수준별 기본값 (신규 파라미터 추가) ---
+# --- 사용자 수준별 기본값 ---
 DEFAULT_PARAMS = {
     'common': {
         'monthly_investment_krw': 500000,
@@ -29,11 +42,11 @@ DEFAULT_PARAMS = {
         'annual_dividend_yield': 3.5,
         'reinvest_dividends': True,
         'annual_expense_ratio': 0.06,
-        'dividend_tax_rate': 15.0, # 배당소득세율 기본값 수정 (15.4 -> 15.0)
+        'dividend_tax_rate': 15.0,
         'capital_gains_tax_rate': 22.0,
-        'capital_gains_deduction_krw': 2500000, # 양도소득세 공제액 추가
+        'capital_gains_deduction_krw': 2500000,
         'exchange_rate': 1380,
-        'annual_exchange_rate_change': 0.0, # 환율 변동률 추가
+        'annual_exchange_rate_change': 0.0,
     },
     'savings': {
         'savings_interest_rate': 3.5,
@@ -42,7 +55,6 @@ DEFAULT_PARAMS = {
 }
 
 
-# --- 데이터 클래스 정의 (신규 파라미터 반영) ---
 @dataclass
 class SimulationInputs:
     """시뮬레이션 입력값을 저장하는 데이터 클래스"""
@@ -50,7 +62,6 @@ class SimulationInputs:
     investment_years: int
     seed_money_krw: int
     annual_inflation_rate: float
-    # 투자 관련
     annual_price_growth_rate: float
     annual_dividend_yield: float
     reinvest_dividends: bool
@@ -60,12 +71,10 @@ class SimulationInputs:
     capital_gains_deduction_krw: int
     exchange_rate: int
     annual_exchange_rate_change: float
-    # 예/적금 관련
     savings_interest_rate: float
     savings_tax_rate: float
 
 
-# --- 유틸리티 함수 (기존과 동일) ---
 def format_krw(amount: float) -> str:
     """숫자를 '조', '억', '만' 단위의 원화 문자열로 변환합니다."""
     if abs(amount) >= 1_0000_0000_0000:
@@ -77,70 +86,59 @@ def format_krw(amount: float) -> str:
     return f"{amount:,.0f}원"
 
 
-# --- 시뮬레이션 함수 (로직 개선) ---
 def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
-    """적립식 투자 시뮬레이션을 실행합니다. (개선된 로직 적용)"""
-    # 입력값 초기화 및 월 단위 변환
-    total_months = inputs.investment_years * 12
+    """적립식 투자 시뮬레이션을 실행합니다. (수익률 계산 로직 수정)"""
+    total_months = inputs.investment_years * MONTHS_IN_YEAR
     monthly_investment_usd = inputs.monthly_investment_krw / inputs.exchange_rate
     seed_money_usd = inputs.seed_money_krw / inputs.exchange_rate
 
-    # 월별 수익률/비용률 단순 계산으로 변경 (복리 가정 제거)
-    monthly_growth_rate = inputs.annual_price_growth_rate / 100 / 12
-    monthly_dividend_yield = inputs.annual_dividend_yield / 100 / 12
-    monthly_expense_ratio = inputs.annual_expense_ratio / 100 / 12
-    monthly_exchange_rate_change = (1 + inputs.annual_exchange_rate_change / 100) ** (1/12) - 1
+    # [수정] 월별 수익률/비용률을 기하 평균으로 정확하게 계산
+    monthly_growth_rate = (1 + inputs.annual_price_growth_rate / 100) ** (1/MONTHS_IN_YEAR) - 1
+    monthly_dividend_yield = (1 + inputs.annual_dividend_yield / 100) ** (1/MONTHS_IN_YEAR) - 1
+    monthly_expense_ratio = (1 + inputs.annual_expense_ratio / 100) ** (1/MONTHS_IN_YEAR) - 1
+    monthly_exchange_rate_change = (1 + inputs.annual_exchange_rate_change / 100) ** (1/MONTHS_IN_YEAR) - 1
 
-    # 변수 초기화
     asset_usd = seed_money_usd
-    principal_usd = seed_money_usd # 순수 납입 원금 (배당 재투자 제외)
-    cost_basis_usd = seed_money_usd # 취득가액 (배당 재투자 포함)
+    principal_usd = seed_money_usd
+    cost_basis_usd = seed_money_usd
     cumulative_dividends_usd = 0.0
     current_exchange_rate = float(inputs.exchange_rate)
     results = []
 
     for month in range(1, total_months + 1):
-        # 자산 성장 (주가 성장, 비용 차감)
         asset_usd *= (1 + monthly_growth_rate)
-        asset_usd *= (1 - monthly_expense_ratio) # 운용보수 매월 차감
+        asset_usd *= (1 - monthly_expense_ratio) # 비용은 복리 개념으로 차감
 
-        # 배당금 계산 및 재투자
         monthly_dividend = asset_usd * monthly_dividend_yield
         dividend_after_tax = monthly_dividend * (1 - inputs.dividend_tax_rate / 100)
         cumulative_dividends_usd += dividend_after_tax
 
         if inputs.reinvest_dividends:
             asset_usd += dividend_after_tax
-            cost_basis_usd += dividend_after_tax # 재투자 배당은 취득가액에 포함
+            cost_basis_usd += dividend_after_tax
 
-        # 월 추가 납입
         asset_usd += monthly_investment_usd
-        principal_usd += monthly_investment_usd # 순수 원금에만 월 납입액 추가
+        principal_usd += monthly_investment_usd
         cost_basis_usd += monthly_investment_usd
 
-        # 환율 변동 적용
         current_exchange_rate *= (1 + monthly_exchange_rate_change)
 
-        # 연말 데이터 기록
-        if month % 12 == 0:
+        if month % MONTHS_IN_YEAR == 0:
             final_asset_usd = asset_usd
             capital_gains_usd = asset_usd - cost_basis_usd
 
-            # 최종 연도에만 양도소득세 계산
             if month == total_months:
-                # KRW로 환산 후 공제액 적용
                 capital_gains_krw = capital_gains_usd * current_exchange_rate
                 deduction_krw = inputs.capital_gains_deduction_krw
                 taxable_gains_krw = max(0, capital_gains_krw - deduction_krw)
 
-                # 세금 계산 및 최종 자산 반영
                 capital_gains_tax_krw = taxable_gains_krw * (inputs.capital_gains_tax_rate / 100)
                 capital_gains_tax_usd = capital_gains_tax_krw / current_exchange_rate
                 final_asset_usd -= capital_gains_tax_usd
                 capital_gains_usd -= capital_gains_tax_usd
 
             results.append({
-                YEAR: month // 12,
+                YEAR: month // MONTHS_IN_YEAR,
                 PRINCIPAL_KRW: principal_usd * current_exchange_rate,
                 ASSET_KRW: final_asset_usd * current_exchange_rate,
                 CAPITAL_GAINS_KRW: capital_gains_usd * current_exchange_rate,
@@ -151,13 +149,12 @@ def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
 
 
 def run_savings_simulation(inputs: SimulationInputs) -> pd.DataFrame:
-    """예/적금(월 복리) 시뮬레이션을 실행합니다. (기존과 동일)"""
-    total_months = inputs.investment_years * 12
-    monthly_rate = inputs.savings_interest_rate / 100 / 12
+    """예/적금(월 복리) 시뮬레이션을 실행합니다."""
+    total_months = inputs.investment_years * MONTHS_IN_YEAR
+    monthly_rate = inputs.savings_interest_rate / 100 / MONTHS_IN_YEAR
     tax_rate = inputs.savings_tax_rate / 100
 
     asset = float(inputs.seed_money_krw)
-    principal = float(inputs.seed_money_krw) # 원금 계산 추가
     interest_for_year = 0.0
     results = []
 
@@ -165,31 +162,24 @@ def run_savings_simulation(inputs: SimulationInputs) -> pd.DataFrame:
         interest = asset * monthly_rate
         interest_for_year += interest
         asset += interest
-
         asset += inputs.monthly_investment_krw
-        principal += inputs.monthly_investment_krw
 
-        if month % 12 == 0:
+        if month % MONTHS_IN_YEAR == 0:
             taxable_interest = max(0, interest_for_year)
             tax = taxable_interest * tax_rate
             asset -= tax
-
             results.append({
-                YEAR: month // 12,
+                YEAR: month // MONTHS_IN_YEAR,
                 SAVINGS_ASSET_KRW: asset,
-                # PRINCIPAL_KRW: principal # 투자 시뮬레이션의 원금을 사용하므로 여기서 반환 불필요
             })
             interest_for_year = 0.0
 
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 
-# --- UI 표시 함수 (ROI 계산 로직 수정) ---
 def display_summary(final_data: pd.Series, inputs: SimulationInputs):
     """최종 결과 요약 정보를 비교하여 표시합니다."""
     st.subheader("📊 최종 결과 요약")
-
-    # 순수 투자 원금 기준으로 수익 계산 (수정된 핵심 로직)
     inv_principal = final_data[PRINCIPAL_KRW]
     inv_asset = final_data[ASSET_KRW]
     sav_asset = final_data[SAVINGS_ASSET_KRW]
@@ -207,21 +197,15 @@ def display_summary(final_data: pd.Series, inputs: SimulationInputs):
 
 
 def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
-    """상세 데이터 테이블과 시각화 차트를 표시합니다. (기존과 거의 동일)"""
+    """상세 데이터 테이블과 시각화 차트를 표시합니다."""
     df_display = df.copy()
     inflation_divisor = (1 + inputs.annual_inflation_rate / 100) ** df_display[YEAR]
     df_display[ASSET_PV_KRW] = df_display[ASSET_KRW] / inflation_divisor
     df_display[SAVINGS_ASSET_PV_KRW] = df_display[SAVINGS_ASSET_KRW] / inflation_divisor
 
     st.subheader("📋 연차별 상세 결과")
-    display_cols = {
-        YEAR: "연차", PRINCIPAL_KRW: "총 투자 원금", ASSET_KRW: "적립식 투자 평가액",
-        SAVINGS_ASSET_KRW: "예/적금 평가액", ASSET_PV_KRW: "적립식 투자 현재가치",
-        SAVINGS_ASSET_PV_KRW: "예/적금 현재가치", CUMULATIVE_DIVIDEND_KRW: "누적 배당금(세후)",
-        CAPITAL_GAINS_KRW: "자본 이득(세후)",
-    }
-    df_table = df_display[list(display_cols.keys())].rename(columns=display_cols)
-    format_dict = {col: "{:,.0f}원" for col in display_cols.values() if col != "연차"}
+    df_table = df_display[list(DISPLAY_COLS.keys())].rename(columns=DISPLAY_COLS)
+    format_dict = {col: "{:,.0f}원" for col in DISPLAY_COLS.values() if col != "연차"}
     st.dataframe(df_table.style.format(formatter=format_dict), hide_index=True, use_container_width=True)
 
     st.subheader("💹 자산 명목가치 성장 비교")
@@ -235,10 +219,10 @@ def display_charts_and_data(df: pd.DataFrame, inputs: SimulationInputs):
     st.line_chart(chart_df_pv)
 
 
-# --- Streamlit 앱 메인 로직 (UI 위젯 추가 및 수정) ---
-def main():
+def main() -> None:
+    """Streamlit 앱 메인 로직"""
     st.set_page_config(layout="wide")
-    st.title('📈 적립식 투자 시뮬레이터 (개선판)')
+    st.title('📈 적립식 투자 시뮬레이터 (개선판 v2)')
 
     if 'simulation_run' not in st.session_state:
         st.session_state['simulation_run'] = False
@@ -273,7 +257,8 @@ def main():
                 apgr, ady = JEPI_DEFAULTS['apgr'], JEPI_DEFAULTS['ady']
             else:
                 is_disabled = (level != "고수" and rate_model == "직접 입력")
-                if is_disabled: st.info("'직접 입력'은 '고수' 레벨에서만 상세 설정이 가능합니다.")
+                if is_disabled:
+                    st.warning("'직접 입력'은 '고수' 레벨에서만 상세 설정이 가능합니다.") # st.warning으로 변경
                 apgr = st.number_input('연평균 주가 성장률 (%)', -20.0, 50.0, params['annual_price_growth_rate'], 0.1, disabled=is_disabled,
                                      help="주가 자체가 연평균 몇 %씩 상승하는지에 대한 가정입니다.")
                 ady = st.number_input('연평균 배당수익률 (%)', 0.0, 20.0, params['annual_dividend_yield'], 0.1, disabled=is_disabled,
@@ -286,7 +271,7 @@ def main():
                 params['reinvest_dividends'] = st.toggle('배당 수익 자동 재투자', value=params['reinvest_dividends'],
                     help="세금을 뗀 배당금을 다시 투자하여 복리 효과를 극대화할지 여부를 선택합니다.")
                 params['annual_expense_ratio'] = st.slider('연간 운용보수 (%)', 0.0, 2.0, params['annual_expense_ratio'], 0.01, format="%.2f",
-                    help="ETF 운용사에 매년 지불하는 보수(수수료) 비율입니다. 매월 분할 차감됩니다.")
+                    help="ETF 운용사에 매년 지불하는 보수(수수료) 비율입니다. 매월 복리 차감됩니다.")
 
                 st.subheader("💱 환율 설정")
                 params['exchange_rate'] = st.number_input('초기 원/달러 환율 (원)', 800, 2500, params['exchange_rate'],
@@ -339,8 +324,10 @@ def main():
     with st.expander("ℹ️ 시뮬레이션 모델의 주요 가정 및 한계"):
         st.warning("본 시뮬레이션의 모든 결과는 사용자가 입력한 가정에 기반한 추정치이며, 미래의 실제 수익률을 보장하지 않습니다.")
         st.markdown("""
-        - **고정 성장률**: 시뮬레이션은 모든 연평균 값(수익률, 물가, 환율 변동률 등)이 기간 내내 일정하다고 가정합니다. 실제 시장의 **변동성**은 반영되지 않습니다.
-        - **단순화된 세금**: 현재의 단일 세율 및 공제액을 적용하며, 실제로는 금융소득종합과세, 세법 개정 등 더 복잡한 세금 체계가 적용될 수 있습니다.
+        - **고정 성장률**: 모든 연평균 값(수익률, 물가, 환율 변동률 등)이 기간 내내 일정하다고 가정하며, 실제 시장의 **변동성**은 반영되지 않습니다.
+        - **단순화된 세금**:
+            - **양도소득세**: 투자 기간 마지막 해에 전량 매도하는 것을 가정하여 최종 자산에만 1회 부과됩니다.
+            - **기타**: 현재의 단일 세율 및 공제액을 적용하며, 실제로는 금융소득종합과세, 세법 개정 등 더 복잡한 세금 체계가 적용될 수 있습니다.
         - **기타 비용 미반영**: 증권사 매매 수수료, 환전 수수료 등의 거래 비용은 계산에 포함되지 않아 실제 수익률은 더 낮을 수 있습니다.
 
         **결론적으로 본 도구는 교육 및 시나리오 분석 목적으로만 활용해야 하며, 실제 투자 결정의 직접적인 근거로 사용될 수 없습니다.**
@@ -348,3 +335,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
