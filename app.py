@@ -6,12 +6,14 @@ from dataclasses import dataclass
 MONTHS_IN_YEAR = 12
 YEAR = "연차"
 PRINCIPAL_KRW = "총 투자 원금(원)"
+PRE_TAX_ASSET_KRW = "평가 금액(세전)" # 컬럼 추가
 ASSET_KRW = "최종 평가 금액(원)"
-CAPITAL_GAINS_KRW = "자본 이득(최종연도 세후)" # 컬럼명 수정
+CAPITAL_GAINS_KRW = "자본 이득(최종연도 세후)"
 CUMULATIVE_DIVIDEND_KRW = "누적 배당금(원)"
 SAVINGS_ASSET_KRW = "예/적금 평가 금액(원)"
 ASSET_PV_KRW = "적립식 투자 평가 금액(현재 가치)"
 SAVINGS_ASSET_PV_KRW = "예/적금 평가 금액(현재 가치)"
+FINAL_ANNUAL_DIVIDEND_KRW = "최종 연간 배당금(세후)" # 컬럼 추가
 
 # UI 표시용 컬럼 정의 (전역 상수로 이동)
 DISPLAY_COLS = {
@@ -92,7 +94,6 @@ def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
     monthly_investment_usd = inputs.monthly_investment_krw / inputs.exchange_rate
     seed_money_usd = inputs.seed_money_krw / inputs.exchange_rate
 
-    # [수정] 월별 수익률/비용률을 기하 평균으로 정확하게 계산
     monthly_growth_rate = (1 + inputs.annual_price_growth_rate / 100) ** (1/MONTHS_IN_YEAR) - 1
     monthly_dividend_yield = (1 + inputs.annual_dividend_yield / 100) ** (1/MONTHS_IN_YEAR) - 1
     monthly_expense_ratio = (1 + inputs.annual_expense_ratio / 100) ** (1/MONTHS_IN_YEAR) - 1
@@ -107,7 +108,7 @@ def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
 
     for month in range(1, total_months + 1):
         asset_usd *= (1 + monthly_growth_rate)
-        asset_usd *= (1 - monthly_expense_ratio) # 비용은 복리 개념으로 차감
+        asset_usd *= (1 - monthly_expense_ratio)
 
         monthly_dividend = asset_usd * monthly_dividend_yield
         dividend_after_tax = monthly_dividend * (1 - inputs.dividend_tax_rate / 100)
@@ -124,25 +125,34 @@ def run_investment_simulation(inputs: SimulationInputs) -> pd.DataFrame:
         current_exchange_rate *= (1 + monthly_exchange_rate_change)
 
         if month % MONTHS_IN_YEAR == 0:
+            pre_tax_asset_krw = asset_usd * current_exchange_rate
             final_asset_usd = asset_usd
             capital_gains_usd = asset_usd - cost_basis_usd
+            final_annual_dividend_krw = 0.0
 
             if month == total_months:
-                capital_gains_krw = capital_gains_usd * current_exchange_rate
+                capital_gains_krw_val = capital_gains_usd * current_exchange_rate
                 deduction_krw = inputs.capital_gains_deduction_krw
-                taxable_gains_krw = max(0, capital_gains_krw - deduction_krw)
+                taxable_gains_krw = max(0, capital_gains_krw_val - deduction_krw)
 
                 capital_gains_tax_krw = taxable_gains_krw * (inputs.capital_gains_tax_rate / 100)
                 capital_gains_tax_usd = capital_gains_tax_krw / current_exchange_rate
+                
                 final_asset_usd -= capital_gains_tax_usd
                 capital_gains_usd -= capital_gains_tax_usd
+
+                # 최종 연간 배당금 추정 (세후)
+                annual_dividend_krw = pre_tax_asset_krw * (inputs.annual_dividend_yield / 100)
+                final_annual_dividend_krw = annual_dividend_krw * (1 - inputs.dividend_tax_rate / 100)
 
             results.append({
                 YEAR: month // MONTHS_IN_YEAR,
                 PRINCIPAL_KRW: principal_usd * current_exchange_rate,
+                PRE_TAX_ASSET_KRW: pre_tax_asset_krw,
                 ASSET_KRW: final_asset_usd * current_exchange_rate,
                 CAPITAL_GAINS_KRW: capital_gains_usd * current_exchange_rate,
                 CUMULATIVE_DIVIDEND_KRW: cumulative_dividends_usd * current_exchange_rate,
+                FINAL_ANNUAL_DIVIDEND_KRW: final_annual_dividend_krw,
             })
 
     return pd.DataFrame(results) if results else pd.DataFrame()
@@ -183,11 +193,22 @@ def display_summary(final_data: pd.Series, inputs: SimulationInputs):
     inv_principal = final_data[PRINCIPAL_KRW]
     inv_asset = final_data[ASSET_KRW]
     sav_asset = final_data[SAVINGS_ASSET_KRW]
+    pre_tax_inv_asset = final_data[PRE_TAX_ASSET_KRW]
+    final_annual_dividend = final_data[FINAL_ANNUAL_DIVIDEND_KRW]
 
     col1, col2, col3 = st.columns(3)
     col1.metric("총 투자 원금", format_krw(inv_principal))
     col2.metric("예/적금 투자 (세후)", format_krw(sav_asset), f"수익: {format_krw(sav_asset - inv_principal)}")
     col3.metric("적립식 투자 (세후)", format_krw(inv_asset), f"수익: {format_krw(inv_asset - inv_principal)}")
+    
+    # --- 추가된 부분: 최종 연간 배당금 표시 ---
+    if final_annual_dividend > 0:
+        st.metric(
+            label=f"💰 최종 연차({inputs.investment_years}년) 예상 연간 배당금 (세후)",
+            value=f"{format_krw(final_annual_dividend)} (월 {format_krw(final_annual_dividend / 12)})",
+            help=f"투자를 종료하는 시점의 세전 평가금액({format_krw(pre_tax_inv_asset)})을 기준으로, 연 {inputs.annual_dividend_yield}%의 배당수익률과 {inputs.dividend_tax_rate}%의 세율을 적용하여 추산한 금액입니다. 이 배당금은 최종 자산에 포함되지 않은, 해당 시점부터 1년간 발생할 것으로 예상되는 현금흐름입니다."
+        )
+    # --- 여기까지 ---
 
     st.info(
         f"**{inputs.investment_years}년** 후, 총 투자 원금 **{format_krw(inv_principal)}**은(는) "
@@ -258,11 +279,11 @@ def main() -> None:
             else:
                 is_disabled = (level != "고수" and rate_model == "직접 입력")
                 if is_disabled:
-                    st.warning("'직접 입력'은 '고수' 레벨에서만 상세 설정이 가능합니다.") # st.warning으로 변경
+                    st.warning("'직접 입력'은 '고수' 레벨에서만 상세 설정이 가능합니다.")
                 apgr = st.number_input('연평균 주가 성장률 (%)', -20.0, 50.0, params['annual_price_growth_rate'], 0.1, disabled=is_disabled,
-                                     help="주가 자체가 연평균 몇 %씩 상승하는지에 대한 가정입니다.")
+                                       help="주가 자체가 연평균 몇 %씩 상승하는지에 대한 가정입니다.")
                 ady = st.number_input('연평균 배당수익률 (%)', 0.0, 20.0, params['annual_dividend_yield'], 0.1, disabled=is_disabled,
-                                    help="투자 원금 대비 연평균 몇 %의 배당금을 받는지에 대한 가정입니다.")
+                                      help="투자 원금 대비 연평균 몇 %의 배당금을 받는지에 대한 가정입니다.")
 
             params['annual_price_growth_rate'] = apgr
             params['annual_dividend_yield'] = ady
@@ -335,4 +356,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+        """)
 
